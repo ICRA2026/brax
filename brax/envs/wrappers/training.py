@@ -98,8 +98,8 @@ class EpisodeWrapper(Wrapper):
     def f(state, _):
       nstate = self.env.step(state, action)
       return nstate, nstate.reward
-
     state, rewards = jax.lax.scan(f, state, (), self.action_repeat)
+    
     state = state.replace(reward=jp.sum(rewards, axis=0))
     steps = state.info['steps'] + self.action_repeat
     one = jp.ones_like(state.done)
@@ -113,14 +113,44 @@ class EpisodeWrapper(Wrapper):
 
     # Aggregate state metrics into episode metrics
     prev_done = state.info['episode_done']
+    # jax.debug.print("rewards.shape: {}", rewards.shape) # (1, 1024)
+    # jax.debug.breakpoint()
     state.info['episode_metrics']['sum_reward'] += jp.sum(rewards, axis=0)
+    # jax.debug.print("sum_reward.shape: {}", state.info['episode_metrics']['sum_reward'].shape) # (1024,)
     state.info['episode_metrics']['sum_reward'] *= (1 - prev_done)
     state.info['episode_metrics']['length'] += self.action_repeat
     state.info['episode_metrics']['length'] *= (1 - prev_done)
+    # jax.debug.print(state.metrics.keys())
+    accumulate_and_normalize_metrics = ['cube_collision', 'floor_collision']
     for metric_name in state.metrics.keys():
-      if metric_name != 'reward':
+      if metric_name in accumulate_and_normalize_metrics:
+        # Accumulate metric during episode
         state.info['episode_metrics'][metric_name] += state.metrics[metric_name]
         state.info['episode_metrics'][metric_name] *= (1 - prev_done)
+        # Normalize only at episode end
+        state.info['episode_metrics'][metric_name] = jp.where(
+            done,
+            state.info['episode_metrics'][metric_name] / jp.maximum(state.info['episode_metrics']['length'], 1),
+            state.info['episode_metrics'][metric_name]
+        )
+      elif metric_name == 'success':
+        state.info['episode_metrics'][metric_name] = jp.maximum(
+            state.info['episode_metrics'][metric_name], state.metrics[metric_name]
+        )
+      elif metric_name == 'jerk':
+        # Accumulate metric during episode
+        state.info['episode_metrics'][metric_name] += state.metrics[metric_name]
+        state.info['episode_metrics'][metric_name] *= (1 - prev_done)
+        # Normalize only at episode end
+        state.info['episode_metrics'][metric_name] = jp.where(
+            done,
+            state.info['episode_metrics'][metric_name] / jp.maximum(state.info['episode_metrics']['length'], 1),
+            state.info['episode_metrics'][metric_name]
+        )
+      elif metric_name != 'reward':
+        state.info['episode_metrics'][metric_name] += state.metrics[metric_name]
+        state.info['episode_metrics'][metric_name] *= (1 - prev_done)
+
     state.info['episode_done'] = done
     return state.replace(done=done)
 
